@@ -136,13 +136,32 @@ def create_simulated_bulk(adata_train, n_samples, cells_per_sample=1000, alpha=1
         bulk_data[i] = B_sim
 
     print(f" Generated {n_samples:,} simulated bulk samples")
-    print(f"\nBulk data statistics")
+    print(f"\nBulk data statistics (raw counts)")
     print(f" Shape: {bulk_data.shape}")
     print(f" Mean total counts: {bulk_data.sum(axis=1).mean():.0f}")
     print(f" Min total counts: {bulk_data.sum(axis=1).min():.0f}")
     print(f" Max total counts: {bulk_data.sum(axis=1).max():.0f}")
 
-    return bulk_data, true_proportions
+    # CRITICAL: Normalize bulk data the same way as single-cell data
+    # to avoid scale mismatch and NaN losses
+    print(f"\nNormalizing bulk data (target_sum=1e4, log1p)...")
+
+    # Total count normalization (CPM-like)
+    bulk_data_normalized = np.zeros_like(bulk_data, dtype=np.float32)
+    for i in range(n_samples):
+        total_counts = bulk_data[i].sum()
+        if total_counts > 0:
+            bulk_data_normalized[i] = (bulk_data[i] / total_counts) * 1e4
+        else:
+            bulk_data_normalized[i] = bulk_data[i]
+
+    # Log transformation
+    bulk_data_normalized = np.log1p(bulk_data_normalized)
+
+    print(f" Normalized bulk data range: [{bulk_data_normalized.min():.2f}, {bulk_data_normalized.max():.2f}]")
+    print(f" Normalized bulk data mean: {bulk_data_normalized.mean():.2f}")
+
+    return bulk_data_normalized, true_proportions
 
 
 ### 2. PYTORCH DATASET CLASS
@@ -192,6 +211,18 @@ class SingleCellBulkDataset(Dataset):
 
         self.n_sc = len(self.sc_data)
         self.n_bulk = len(self.bulk_data)
+
+        # Validate data for NaN/Inf
+        if torch.isnan(self.sc_data).any():
+            raise ValueError("NaN detected in single-cell data!")
+        if torch.isnan(self.bulk_data).any():
+            raise ValueError("NaN detected in bulk data!")
+        if torch.isnan(self.true_proportions).any():
+            raise ValueError("NaN detected in proportions!")
+        if torch.isinf(self.sc_data).any():
+            raise ValueError("Inf detected in single-cell data!")
+        if torch.isinf(self.bulk_data).any():
+            raise ValueError("Inf detected in bulk data!")
 
     
     def __len__(self):
