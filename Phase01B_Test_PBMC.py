@@ -11,6 +11,25 @@ from torch.utils.data import Dataset, DataLoader
 import pickle
 import scanpy as sc
 
+# ============================================================================
+# CONFIGURATION - Update these paths and parameters for your environment
+# ============================================================================
+DATA_DIR = '/nfs/blanche/share/han/scalebio_pmbcs'
+INPUT_TRAIN_FILE = f'{DATA_DIR}/adata_train.h5ad'
+OUTPUT_DIR = f'{DATA_DIR}/phase1b_outputs'
+
+# Simulation parameters
+N_TRAIN_SAMPLES = 10000
+N_VAL_SAMPLES = 2000
+CELLS_PER_SAMPLE = 1000
+DIRICHLET_ALPHA = 1.0
+TRAIN_SEED = 42
+VAL_SEED = 123
+
+# DataLoader parameters
+BATCH_SIZE = 128
+NUM_WORKERS = 0
+
 print("=" * 70)
 print("PHASE I-B: SIMULATION AND DATA MODULES")
 print("=" * 70) 
@@ -87,7 +106,7 @@ def create_simulated_bulk(adata_train, n_samples, cells_per_sample=1000, alpha=1
 
         # Ensure we have at least cells_per_sample total
         # (rounding might cause slight deviation)
-        diff = cells_per_sample = n_cells_per_type.sum()
+        diff = cells_per_sample - n_cells_per_type.sum()
         if diff > 0:
             # Add extra cells to most abundant type
             max_idx = np.argmax(P_true)
@@ -199,26 +218,24 @@ print("GENERATING SIMULATED BULK DATA")
 print("=" * 70)
 
 # Load saved train data
-adata_train = sc.read_h5ad('/nfs/blanche/share/han/scalebio_pmbcs/adata_train.h5ad')
+adata_train = sc.read_h5ad(INPUT_TRAIN_FILE)
 
 # Generate training bulk data
-n_train_samples = 10000
 bulk_train, props_train = create_simulated_bulk(
     adata_train,
-    n_samples=n_train_samples,
-    cells_per_sample=1000,
-    alpha=1.0,
-    seed=42
+    n_samples=N_TRAIN_SAMPLES,
+    cells_per_sample=CELLS_PER_SAMPLE,
+    alpha=DIRICHLET_ALPHA,
+    seed=TRAIN_SEED
 )
 
 # Generate validation bulk data (smaller, separate seed)
-n_val_samples = 2000
 bulk_val, props_val = create_simulated_bulk(
     adata_train,
-    n_samples=n_val_samples,
-    cells_per_sample=1000,
-    alpha=1.0,
-    seed=123
+    n_samples=N_VAL_SAMPLES,
+    cells_per_sample=CELLS_PER_SAMPLE,
+    alpha=DIRICHLET_ALPHA,
+    seed=VAL_SEED
 )
 
 ### 4. CREATE PYTORCH DATALOADERS
@@ -253,26 +270,24 @@ print(f"  Bulk samples: {val_dataset.n_bulk:,}")
 print(f"  Total __len__: {len(val_dataset):,}")
 
 # Create dataloaders
-batch_size = 128
-
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=batch_size,
+    batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=0, # Set to 0 to avoid multiprocessing issues
-    pin_memory=True # Faster data transfer to GPU
+    num_workers=NUM_WORKERS,  # Set to 0 to avoid multiprocessing issues
+    pin_memory=True  # Faster data transfer to GPU
 )
 
 val_dataloader = DataLoader(
     val_dataset,
-    batch_size=batch_size,
+    batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=0,
+    num_workers=NUM_WORKERS,
     pin_memory=True
 )
 
 print(f"\nDataLoader settings:")
-print(f"  Batch size: {batch_size}")
+print(f"  Batch size: {BATCH_SIZE}")
 print(f"  Training batches per epoch: {len(train_dataloader):,}")
 print(f"  Validation batches: {len(val_dataloader):,}")
 
@@ -305,39 +320,38 @@ print("\n" + "=" * 70)
 print("SAVING SIMULATION DATA")
 print("=" * 70)
 
-output_dir = '/nfs/blanche/share/han/scalebio_pmbcs/phase1b_outputs'
-os.makedirs(output_dir, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Save bulk data
-np.save(f'{output_dir}/bulk_train.npy', bulk_train)
-np.save(f'{output_dir}/props_train.npy', props_train)
-np.save(f'{output_dir}/bulk_val.npy', bulk_val)
-np.save(f'{output_dir}/props_val.npy', props_val)
+np.save(f'{OUTPUT_DIR}/bulk_train.npy', bulk_train)
+np.save(f'{OUTPUT_DIR}/props_train.npy', props_train)
+np.save(f'{OUTPUT_DIR}/bulk_val.npy', bulk_val)
+np.save(f'{OUTPUT_DIR}/props_val.npy', props_val)
 
 print(f"✓ Saved bulk training data: {bulk_train.shape}")
 print(f"✓ Saved bulk validation data: {bulk_val.shape}")
 
 # Save a summary
 summary = {
-    'n_train_samples': n_train_samples,
-    'n_val_samples': n_val_samples,
-    'cells_per_sample': 1000,
-    'alpha': 1.0,
+    'n_train_samples': N_TRAIN_SAMPLES,
+    'n_val_samples': N_VAL_SAMPLES,
+    'cells_per_sample': CELLS_PER_SAMPLE,
+    'alpha': DIRICHLET_ALPHA,
     'n_genes': bulk_train.shape[1],
     'n_cell_types': props_train.shape[1]
 }
 
-with open(f'{output_dir}/simulation_summary.pkl', 'wb') as f:
+with open(f'{OUTPUT_DIR}/simulation_summary.pkl', 'wb') as f:
     pickle.dump(summary, f)
 
-print(f"✓ Saved simulation summary")
+print(f"✓ Saved simulation summary to {OUTPUT_DIR}")
 
 print("\n" + "=" * 70)
 print("PHASE I-B COMPLETE")
 print("=" * 70)
 print(f"✓ Simulation function created")
-print(f"✓ Generated {n_train_samples:,} training bulk samples")
-print(f"✓ Generated {n_val_samples:,} validation bulk samples")
+print(f"✓ Generated {N_TRAIN_SAMPLES:,} training bulk samples")
+print(f"✓ Generated {N_VAL_SAMPLES:,} validation bulk samples")
 print(f"✓ Custom PyTorch Dataset class created")
 print(f"✓ DataLoaders ready for training")
 print("=" * 70)

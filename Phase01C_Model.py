@@ -354,14 +354,12 @@ class HP_VADE(pl.LightningModule):
         p_pred = self.deconv_net(b_sim)  # Predict proportions
         
         # --- Calculate Bulk Losses ---
-        
+
         # L_prop: Proportion prediction loss
         # Using KL divergence for comparing distributions
-        # Add small epsilon to avoid log(0)
-        p_true_safe = p_true + 1e-10
-        p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
-        loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
-        
+        # Ensure p_true has a small epsilon to avoid log(0)
+        loss_prop = F.kl_div(p_pred.log(), p_true + 1e-10, reduction='batchmean')
+
         # Alternative (simpler but sometimes less stable):
         # loss_prop = F.mse_loss(p_pred, p_true)
         
@@ -435,9 +433,7 @@ class HP_VADE(pl.LightningModule):
         p_pred = self.deconv_net(b_sim)
         
         # Bulk Losses
-        p_true_safe = p_true + 1e-10
-        p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
-        loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+        loss_prop = F.kl_div(p_pred.log(), p_true + 1e-10, reduction='batchmean')
         
         b_rec = torch.matmul(p_pred, self.S.T)
         loss_bulk_recon = F.mse_loss(b_rec, b_sim)
