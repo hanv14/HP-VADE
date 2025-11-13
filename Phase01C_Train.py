@@ -2,10 +2,8 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
-import sys
-sys.path.append('/data/han/Projects/Deconvolution-Dev/src-dev')
-from Phase01_Model import HP_VADE, create_model
 import os
+from Phase01C_Model import HP_VADE, create_model
 
 
 def train_hp_vade(

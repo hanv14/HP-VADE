@@ -354,16 +354,18 @@ class HP_VADE(pl.LightningModule):
         p_pred = self.deconv_net(b_sim)  # Predict proportions
         
         # --- Calculate Bulk Losses ---
-        
+
         # L_prop: Proportion prediction loss
         # Using KL divergence for comparing distributions
-        # Add small epsilon to avoid log(0)
-        p_true_safe = p_true + 1e-10
-        p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
+        # CRITICAL: Ensure p_true is properly normalized and stable
+        p_true_safe = p_true.clamp(min=1e-10)  # Avoid zeros
+        p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)  # Renormalize to sum to 1
+
+        # F.kl_div expects: input = log-probabilities, target = probabilities
         loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
-        
-        # Alternative (simpler but sometimes less stable):
-        # loss_prop = F.mse_loss(p_pred, p_true)
+
+        # Alternative (simpler and more stable):
+        # loss_prop = F.mse_loss(p_pred, p_true_safe)
         
         # L_bulk_recon: Reconstruct bulk data from S and predicted proportions
         # b_rec = S @ p_pred^T
@@ -378,9 +380,22 @@ class HP_VADE(pl.LightningModule):
         # ===================================================================
         # 3. FINAL TOTAL LOSS
         # ===================================================================
-        
+
         total_loss = loss_sc_total + (self.hparams.lambda_bulk * loss_bulk_total)
-        
+
+        # --- NaN Detection (for debugging) ---
+        if torch.isnan(total_loss):
+            print("\n⚠ WARNING: NaN detected in training!")
+            print(f"  loss_recon: {loss_recon.item()}")
+            print(f"  loss_kl: {loss_kl.item()}")
+            print(f"  loss_proto: {loss_proto.item()}")
+            print(f"  loss_prop: {loss_prop.item()}")
+            print(f"  loss_bulk_recon: {loss_bulk_recon.item()}")
+            print(f"  sc_rec range: [{sc_rec.min().item():.2f}, {sc_rec.max().item():.2f}]")
+            print(f"  b_rec range: [{b_rec.min().item():.2f}, {b_rec.max().item():.2f}]")
+            print(f"  p_pred range: [{p_pred.min().item():.4f}, {p_pred.max().item():.4f}]")
+            print(f"  S range: [{self.S.min().item():.2f}, {self.S.max().item():.2f}]")
+
         # --- Comprehensive Logging for Debugging ---
         self.log('train_loss', total_loss, prog_bar=True)
         
@@ -433,9 +448,9 @@ class HP_VADE(pl.LightningModule):
         p_true = batch['bulk_prop']
         
         p_pred = self.deconv_net(b_sim)
-        
+
         # Bulk Losses
-        p_true_safe = p_true + 1e-10
+        p_true_safe = p_true.clamp(min=1e-10)
         p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
         loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
         
