@@ -1,0 +1,212 @@
+﻿HP-VADE Model Architecture: Technical Specification (Phase I-C & I-D)
+1. Objective
+This document provides the complete technical specification for a single Python file (model.py). This file will contain the entire PyTorch/PyTorch Lightning architecture for the HP-VADE prototype.
+The architecture consists of two parts:
+1. Component Modules (Phase I-C): Three standard torch.nn.Module classes that act as our "building blocks" (Encoder, Decoder, Deconvolution Network).
+2. Orchestration Module (Phase I-D): A single pytorch_lightning.LightningModule class that "plumbs" the components together, defines the learnable Signature Matrix (S), and implements the complex joint-training logic.
+2. Dependencies
+You will need the following core libraries:
+* torch
+* torch.nn
+* torch.nn.functional as F
+* pytorch_lightning as pl
+3. Phase I-C: Component Architecture (nn.Module)
+Implement these three classes first. They will be instantiated inside the main Lightning module.
+3.1. Encoder(nn.Module)
+* Purpose: Encodes a single cell's expression into a latent distribution.
+* __init__(self, in_features, latent_dim, n_hidden=128):
+   * in_features: Number of input genes (e.g., 2000).
+   * latent_dim: Dimensionality of the latent space (e.g., 32).
+   * n_hidden: Size of the intermediate layer.
+   * Define self.mlp:
+      * Use nn.Sequential to create an MLP:
+      * nn.Linear(in_features, n_hidden)
+      * nn.ReLU()
+      * nn.Linear(n_hidden, latent_dim * 2)
+      * Note: The output is latent_dim * 2 to hold both mu and logvar.
+* forward(self, x):
+   * Input x shape: (batch_size, in_features).
+   * Pass x through self.mlp to get output of shape (batch_size, latent_dim * 2).
+   * Split the output:
+      * mu = output[:, :latent_dim]
+      * logvar = output[:, latent_dim:]
+   * Return mu, logvar.
+3.2. Decoder(nn.Module)
+* Purpose: Decodes a latent vector back into a gene expression vector.
+* __init__(self, latent_dim, out_features, n_hidden=128):
+   * latent_dim: Must match the Encoder (e.g., 32).
+   * out_features: Number of output genes (e.g., 2000). Must match Encoder's in_features.
+   * n_hidden: Size of the intermediate layer.
+   * Define self.mlp:
+      * Use nn.Sequential to create an MLP (symmetric to the Encoder):
+      * nn.Linear(latent_dim, n_hidden)
+      * nn.ReLU()
+      * nn.Linear(n_hidden, out_features)
+      * CRITICAL: The final layer is linear. Do not add nn.ReLU or nn.Sigmoid after it. We are reconstructing log-normalized data, which is not bounded.
+* forward(self, z):
+   * Input z shape: (batch_size, latent_dim).
+   * Pass z through self.mlp.
+   * Return the reconstructed vector x_rec (shape: (batch_size, out_features)).
+3.3. DeconvolutionNetwork(nn.Module)
+* Purpose: Takes a bulk expression vector and predicts cell type proportions.
+* __init__(self, in_features, n_cell_types, n_hidden=128):
+   * in_features: Number of input genes (e.g., 2000).
+   * n_cell_types: Number of output proportions (e.g., 8 PBMC types).
+   * n_hidden: Size of the intermediate layer.
+   * Define self.mlp:
+      * Use nn.Sequential:
+      * nn.Linear(in_features, n_hidden)
+      * nn.ReLU()
+      * nn.Linear(n_hidden, n_cell_types)
+      * CRITICAL: nn.Softmax(dim=1)
+      * Note: The dim=1 (or dim=-1) is essential to ensure the proportions sum to 1 for each sample in the batch.
+* forward(self, b):
+   * Input b shape: (batch_size, in_features).
+   * Pass b through self.mlp.
+   * Return the proportion vector p_pred (shape: (batch_size, n_cell_types)).
+4. Phase I-D: Orchestration (pl.LightningModule)
+This is the main class that combines all components and defines the training logic.
+* Class: HP_VADE
+* Inherits: pl.LightningModule
+4.1. __init__ (Constructor)
+def __init__(self, 
+            input_dim, 
+            latent_dim, 
+            n_cell_types, 
+            n_hidden=128, 
+            lambda_proto=1.0, 
+            lambda_bulk_recon=0.5, 
+            lambda_bulk=1.0,
+            lambda_kl=0.1,
+            learning_rate=1e-3):
+   
+   super().__init__()
+   # Save all hyperparameters for logging
+   self.save_hyperparameters()
+
+   # --- 1. Instantiate Component Modules ---
+   self.encoder = Encoder(input_dim, latent_dim, n_hidden)
+   self.decoder = Decoder(latent_dim, input_dim, n_hidden)
+   self.deconv_net = DeconvolutionNetwork(input_dim, n_cell_types, n_hidden)
+
+   # --- 2. Define the Learnable Signature Matrix (S) ---
+   # This is the central parameter connecting the two paths.
+   self.S = nn.Parameter(torch.empty(input_dim, n_cell_types))
+   # Initialize it (Xavier/Glorot initialization is a good start)
+   nn.init.xavier_uniform_(self.S)
+
+4.2. Helper Method: reparameterize
+def reparameterize(self, mu, logvar):
+   """
+   Implements the reparameterization trick for the VAE.
+   """
+   if not self.training:
+       return mu
+   std = torch.exp(0.5 * logvar)
+   eps = torch.randn_like(std)
+   return mu + eps * std
+
+4.3. forward (Inference Method)
+def forward(self, bulk_data):
+   """
+   Defines the forward pass for inference (deconvolution only).
+   """
+   # Pass bulk data through the deconvolution network
+   return self.deconv_net(bulk_data)
+
+4.4. training_step (The Core Logic)
+This is the most important method. It defines the joint loss calculation.
+def training_step(self, batch, batch_idx):
+   # The batch is a dict: {'sc_data', 'sc_label', 'bulk_data', 'bulk_prop'}
+   
+   # --- 1. THE SINGLE-CELL PATH (VAE) ---
+   
+   sc_x = batch['sc_data']
+   sc_y = batch['sc_label'] # These are integer labels, e.g., 0, 1, 2...
+   
+   # VAE forward pass
+   mu, logvar = self.encoder(sc_x)
+   z = self.reparameterize(mu, logvar)
+   sc_rec = self.decoder(z)
+   
+   # --- Calculate SC Losses ---
+   
+   # L_recon: Compare reconstruction to the *original cell*
+   loss_recon = F.mse_loss(sc_rec, sc_x)
+   
+   # L_KL: Standard KL divergence
+   loss_kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+   loss_kl = loss_kl.mean()
+   
+   # L_proto: Your novel loss. Compare reconstruction to its prototype.
+   # Get the correct prototype vector (column) from S for each cell.
+   # self.S is (Genes, Types). We want (Batch, Genes)
+   # We transpose S to (Types, Genes) and use sc_y as an index.
+   s_y_prototypes = self.S.T[sc_y]
+   loss_proto = F.mse_loss(sc_rec, s_y_prototypes)
+   
+   # Total SC Loss
+   loss_sc_total = loss_recon + \
+                     (self.hparams.lambda_kl * loss_kl) + \
+                     (self.hparams.lambda_proto * loss_proto)
+
+   # --- 2. THE BULK PATH (DECONVOLUTION) ---
+   
+   b_sim = batch['bulk_data']
+   p_true = batch['bulk_prop']
+   
+   # Deconvolution forward pass
+   p_pred = self.deconv_net(b_sim)
+   
+   # --- Calculate Bulk Losses ---
+   
+   # L_prop: Compare predicted proportions to ground truth.
+   # KL divergence is good for comparing distributions.
+   # Ensure p_true has a small epsilon to avoid log(0).
+   loss_prop = F.kl_div(p_pred.log(), p_true, reduction='batchmean')
+   # Alternative (simpler): loss_prop = F.mse_loss(p_pred, p_true)
+
+   # L_bulk_recon: Reconstruct bulk data from S and p_pred
+   # b_rec = S * p_pred
+   # Dimension check: (Genes, Types) @ (Batch, Types).T = (Genes, Batch)
+   # We want (Batch, Genes). So: (Batch, Types) @ (Types, Genes)
+   b_rec = torch.matmul(p_pred, self.S.T)
+   loss_bulk_recon = F.mse_loss(b_rec, b_sim)
+   
+   # Total Bulk Loss
+   loss_bulk_total = loss_prop + (self.hparams.lambda_bulk_recon * loss_bulk_recon)
+
+   # --- 3. FINAL TOTAL LOSS ---
+   
+   total_loss = loss_sc_total + (self.hparams.lambda_bulk * loss_bulk_total)
+   
+   # --- Logging ---
+   self.log('train_loss', total_loss, prog_bar=True)
+   self.log('sc/loss_recon', loss_recon)
+   self.log('sc/loss_kl', loss_kl)
+   self.log('sc/loss_proto', loss_proto)
+   self.log('bulk/loss_prop', loss_prop)
+   self.log('bulk/loss_recon', loss_bulk_recon)
+   
+   return total_loss
+
+4.5. validation_step
+* Implement a validation_step that mirrors the training_step but logs losses with a val_ prefix (e.g., self.log('val_loss', total_loss)). This is essential for monitoring overfitting.
+4.6. configure_optimizers
+def configure_optimizers(self):
+   """
+   Set up the optimizer.
+   """
+   # self.parameters() automatically includes parameters from:
+   # 1. self.encoder
+   # 2. self.decoder
+   # 3. self.deconv_net
+   # 4. self.S (because it's nn.Parameter)
+   optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+   return optimizer
+
+5. Developer Checklist
+* [ ] Dimension Sanity Check: Pay extreme attention to matrix dimensions, especially in training_step during the L_proto and L_bulk_recon calculations. (Batch, Genes) vs (Genes, Batch) will be a common source of bugs.
+* [ ] Loss Function Choice: We've defaulted to MSE for simplicity. kl_div for proportions might be better. The VAE reconstruction loss (L_recon) could also be F.binary_cross_entropy if the data is scaled 0-1, but MSE is safer for log-norm data.
+* [ ] Data Types: Ensure sc_label is passed as torch.long for indexing.
+* [ ] Device: PyTorch Lightning will handle moving data to the GPU (.to(device)), but be mindful of this when debugging.
