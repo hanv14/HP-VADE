@@ -11,9 +11,12 @@ HP-VADE/
 ├── Phase01C_Model.py          # HP-VADE model architecture (Lightning Module)
 ├── Phase01C_Train.py          # Training function with Lightning Trainer
 ├── train_hp_vade.py           # ⭐ Main training script (USE THIS)
+├── test_hp_vade.py            # ⭐ Model testing and evaluation
+├── quick_test.py              # Quick model performance check
 ├── monitor_training.py        # Real-time training monitoring
 ├── run_training.sh            # Interactive training launcher
 ├── TRAINING_GUIDE.md          # 📖 Complete training guide
+├── BUGFIX_NaN_LOSS.md         # NaN loss bugfix documentation
 └── Instruction.txt            # Technical specification
 ```
 
@@ -95,6 +98,33 @@ watch -n 1 nvidia-smi
 ./run_training.sh  # Then select option 7
 ```
 
+### 4. Test Model
+
+**Quick Test** (Fast performance check)
+```bash
+python quick_test.py
+```
+
+**Comprehensive Testing** (Full evaluation with plots)
+```bash
+# Auto-detect best checkpoint
+python test_hp_vade.py --auto
+
+# Specify checkpoint manually
+python test_hp_vade.py --checkpoint ./hp_vade_training/checkpoints/.../best.ckpt
+
+# Custom output directory
+python test_hp_vade.py --auto --output-dir ./my_test_results
+```
+
+**What You Get:**
+- Overall performance metrics (MAE, RMSE, correlation)
+- Per-cell-type accuracy breakdown
+- Scatter plots of predicted vs true proportions
+- Correlation heatmaps
+- Single-cell reconstruction quality
+- All results saved to `./hp_vade_testing/`
+
 ## Command Reference
 
 ### Training Options
@@ -134,6 +164,27 @@ python monitor_training.py -h                 # Show all options
 --interval N                                  # Update interval in seconds
 ```
 
+### Testing Options
+```bash
+python test_hp_vade.py -h                     # Show all options
+
+# Checkpoint selection
+--checkpoint PATH                             # Specify checkpoint path
+--auto                                        # Auto-detect best checkpoint
+--experiment NAME                             # Filter by experiment name (with --auto)
+
+# Data paths
+--data-dir DIR                                # Data directory
+--output-dir DIR                              # Output directory for test results
+
+# Hardware
+--cpu                                         # Force CPU
+```
+
+```bash
+python quick_test.py                          # Quick performance check (no args needed)
+```
+
 ## Output Files
 
 After training, you'll find:
@@ -158,6 +209,23 @@ hp_vade_training/
     ├── bulk_losses.png                       # Bulk losses
     ├── latent_metrics.png                    # Latent metrics
     └── metrics_comparison.csv                # Train/val comparison
+```
+
+After testing, you'll find:
+
+```
+hp_vade_testing/
+├── results/
+│   ├── props_test_true.npy                   # True proportions
+│   ├── props_test_pred.npy                   # Predicted proportions
+│   ├── per_celltype_metrics.csv              # Per-cell-type metrics
+│   └── test_summary.txt                      # Complete test summary
+└── plots/
+    ├── overall_scatter.png                   # Overall performance
+    ├── scatter_by_celltype.png               # Per-cell-type scatter plots
+    ├── correlation_heatmap.png               # Correlation matrix
+    ├── mae_by_celltype.png                   # Error by cell type
+    └── correlation_distribution.png          # Correlation histogram
 ```
 
 ## Model Architecture
@@ -325,9 +393,16 @@ nohup python train_hp_vade.py -y > training.log 2>&1 &
 # 4. Monitor progress
 python monitor_training.py --watch
 
-# 5. View results
+# 5. View training results
 cat ./hp_vade_training/results/training_summary.txt
 ls ./hp_vade_training/monitoring/
+
+# 6. Test trained model
+python test_hp_vade.py --auto
+
+# 7. View test results
+cat ./hp_vade_testing/results/test_summary.txt
+ls ./hp_vade_testing/plots/
 ```
 
 ## Citation
