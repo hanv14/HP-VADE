@@ -413,6 +413,7 @@ def main(args):
         model, trainer = train_hp_vade(
             train_dataloader=train_dataloader,
             val_dataloader=val_dataloader,
+            adata_train=adata_train,  # Pass training data for signature matrix initialization
             input_dim=config.INPUT_DIM,
             latent_dim=config.LATENT_DIM,
             n_cell_types=config.N_CELL_TYPES,

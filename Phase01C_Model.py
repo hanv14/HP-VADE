@@ -213,10 +213,10 @@ class HP_VADE(pl.LightningModule):
                  latent_dim: int,
                  n_cell_types: int,
                  n_hidden: int = 128,
-                 lambda_proto: float = 1.0,
-                 lambda_bulk_recon: float = 0.5,
-                 lambda_bulk: float = 1.0,
-                 lambda_kl: float = 0.1,
+                 lambda_proto: float = 0.1,  # Reduced - VAE reconstruction less important
+                 lambda_bulk_recon: float = 10.0,  # INCREASED - bulk reconstruction is KEY!
+                 lambda_bulk: float = 5.0,  # INCREASED - deconvolution is the main task
+                 lambda_kl: float = 0.01,  # Reduced - just for regularization
                  learning_rate: float = 1e-3):
         
         super().__init__()
@@ -239,11 +239,12 @@ class HP_VADE(pl.LightningModule):
         # This is the central parameter connecting the two paths
         # Shape: (input_dim, n_cell_types) - each column is a cell type prototype
         self.S = nn.Parameter(torch.empty(input_dim, n_cell_types))
-        
-        # Initialize S using Xavier/Glorot initialization
+
+        # Initialize S using Xavier/Glorot initialization (will be overwritten if cell type means provided)
         nn.init.xavier_uniform_(self.S)
-        
+
         print(f"[HP-VADE] Signature matrix S initialized with shape: {self.S.shape}")
+        print(f"[HP-VADE] ⚠️  S initialized randomly - call init_signature_from_celltype_means() for better initialization")
         print(f"[HP-VADE] Loss weights:")
         print(f"  - λ_proto: {lambda_proto}")
         print(f"  - λ_bulk_recon: {lambda_bulk_recon}")
@@ -272,7 +273,60 @@ class HP_VADE(pl.LightningModule):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)  # Sample from N(0,1)
         return mu + eps * std
-    
+
+    def init_signature_from_celltype_means(self, adata_train):
+        """
+        Initialize signature matrix S from cell type mean expressions.
+
+        This gives S a biologically meaningful starting point instead of random initialization.
+
+        Args:
+            adata_train: AnnData object with training data
+                        Must have .layers['counts'] for raw counts
+                        Must have .obs['cell_type_int'] for cell type labels
+        """
+        import numpy as np
+
+        print("\n[HP-VADE] Initializing signature matrix from cell type means...")
+
+        # Get cell type labels
+        cell_type_labels = adata_train.obs['cell_type_int'].values
+        n_cell_types = self.S.shape[1]
+
+        # Get raw counts (for CPM calculation)
+        raw_counts = adata_train.layers['counts']
+        if hasattr(raw_counts, 'toarray'):
+            raw_counts = raw_counts.toarray()
+
+        # Compute CPM-normalized mean expression for each cell type
+        signature_matrix = np.zeros((self.S.shape[0], n_cell_types), dtype=np.float32)
+
+        for ct in range(n_cell_types):
+            # Get cells of this type
+            ct_mask = cell_type_labels == ct
+            ct_counts = raw_counts[ct_mask]
+
+            if ct_counts.shape[0] > 0:
+                # CPM normalization for each cell, then average
+                ct_cpm = np.zeros_like(ct_counts, dtype=np.float32)
+                for i in range(ct_counts.shape[0]):
+                    total = ct_counts[i].sum()
+                    if total > 0:
+                        ct_cpm[i] = (ct_counts[i] / total) * 1e6
+
+                # Mean CPM expression for this cell type
+                signature_matrix[:, ct] = ct_cpm.mean(axis=0)
+
+                print(f"  Cell type {ct}: {ct_mask.sum()} cells, mean CPM = {signature_matrix[:, ct].mean():.2f}")
+
+        # Set S to these values
+        with torch.no_grad():
+            self.S.copy_(torch.FloatTensor(signature_matrix))
+
+        print(f"[HP-VADE] ✓ Signature matrix initialized from cell type means")
+        print(f"[HP-VADE]   S range: [{self.S.min().item():.2f}, {self.S.max().item():.2f}]")
+        print(f"[HP-VADE]   S mean: {self.S.mean().item():.2f}")
+
     def forward(self, bulk_data: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for inference (deconvolution only).
@@ -356,25 +410,28 @@ class HP_VADE(pl.LightningModule):
         # --- Calculate Bulk Losses ---
 
         # L_prop: Proportion prediction loss
-        # Using KL divergence for comparing distributions
-        # CRITICAL: Ensure p_true is properly normalized and stable
+        # IMPROVED: Use both MSE and KL divergence for stronger supervision
         p_true_safe = p_true.clamp(min=1e-10)  # Avoid zeros
         p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)  # Renormalize to sum to 1
 
-        # F.kl_div expects: input = log-probabilities, target = probabilities
-        loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+        # MSE loss: Direct supervision on proportions
+        loss_prop_mse = F.mse_loss(p_pred, p_true_safe)
 
-        # Alternative (simpler and more stable):
-        # loss_prop = F.mse_loss(p_pred, p_true_safe)
-        
+        # KL divergence: Distribution matching
+        loss_prop_kl = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+
+        # Combined proportion loss (MSE is more important for initial learning)
+        loss_prop = loss_prop_mse + 0.1 * loss_prop_kl
+
         # L_bulk_recon: Reconstruct bulk data from S and predicted proportions
+        # This is THE MOST IMPORTANT LOSS for deconvolution
         # b_rec = S @ p_pred^T
         # Math: (input_dim, n_cell_types) @ (batch_size, n_cell_types)^T
         # We want: (batch_size, input_dim), so compute: p_pred @ S^T
         b_rec = torch.matmul(p_pred, self.S.T)  # (batch_size, input_dim)
         loss_bulk_recon = F.mse_loss(b_rec, b_sim)
-        
-        # Total bulk loss
+
+        # Total bulk loss (bulk reconstruction is critical!)
         loss_bulk_total = loss_prop + (self.hparams.lambda_bulk_recon * loss_bulk_recon)
         
         # ===================================================================
@@ -449,14 +506,18 @@ class HP_VADE(pl.LightningModule):
         
         p_pred = self.deconv_net(b_sim)
 
-        # Bulk Losses
+        # Bulk Losses (same as training)
         p_true_safe = p_true.clamp(min=1e-10)
         p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
-        loss_prop = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
-        
+
+        # MSE + KL divergence for proportions
+        loss_prop_mse = F.mse_loss(p_pred, p_true_safe)
+        loss_prop_kl = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+        loss_prop = loss_prop_mse + 0.1 * loss_prop_kl
+
         b_rec = torch.matmul(p_pred, self.S.T)
         loss_bulk_recon = F.mse_loss(b_rec, b_sim)
-        
+
         loss_bulk_total = loss_prop + (self.hparams.lambda_bulk_recon * loss_bulk_recon)
         
         # --- Total Loss ---

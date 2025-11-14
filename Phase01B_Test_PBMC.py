@@ -142,24 +142,27 @@ def create_simulated_bulk(adata_train, n_samples, cells_per_sample=1000, alpha=1
     print(f" Min total counts: {bulk_data.sum(axis=1).min():.0f}")
     print(f" Max total counts: {bulk_data.sum(axis=1).max():.0f}")
 
-    # CRITICAL: Normalize bulk data the same way as single-cell data
-    # to avoid scale mismatch and NaN losses
-    print(f"\nNormalizing bulk data (target_sum=1e4, log1p)...")
+    # CRITICAL FIX: Use CPM normalization for bulk (NOT log-transform)
+    # This preserves the mixture information which is essential for deconvolution
+    # If bulk = 0.7*celltype_A + 0.3*celltype_B, then:
+    #   CPM(bulk) ≈ 0.7*CPM(celltype_A) + 0.3*CPM(celltype_B)
+    # But log(bulk) ≠ 0.7*log(celltype_A) + 0.3*log(celltype_B)
+    print(f"\nNormalizing bulk data (CPM normalization only, NO log transform)...")
 
-    # Total count normalization (CPM-like)
+    # CPM normalization (counts per million)
     bulk_data_normalized = np.zeros_like(bulk_data, dtype=np.float32)
     for i in range(n_samples):
         total_counts = bulk_data[i].sum()
         if total_counts > 0:
-            bulk_data_normalized[i] = (bulk_data[i] / total_counts) * 1e4
+            # Normalize to counts per million (CPM)
+            bulk_data_normalized[i] = (bulk_data[i] / total_counts) * 1e6
         else:
             bulk_data_normalized[i] = bulk_data[i]
 
-    # Log transformation
-    bulk_data_normalized = np.log1p(bulk_data_normalized)
-
-    print(f" Normalized bulk data range: [{bulk_data_normalized.min():.2f}, {bulk_data_normalized.max():.2f}]")
-    print(f" Normalized bulk data mean: {bulk_data_normalized.mean():.2f}")
+    print(f" CPM-normalized bulk data range: [{bulk_data_normalized.min():.2f}, {bulk_data_normalized.max():.2f}]")
+    print(f" CPM-normalized bulk data mean: {bulk_data_normalized.mean():.2f}")
+    print(f" ⚠️  Note: Bulk data is CPM-normalized but NOT log-transformed")
+    print(f" ⚠️  This preserves mixture linearity for deconvolution")
 
     return bulk_data_normalized, true_proportions
 

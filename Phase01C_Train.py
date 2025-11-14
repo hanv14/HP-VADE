@@ -9,15 +9,16 @@ from Phase01C_Model import HP_VADE, create_model
 def train_hp_vade(
     train_dataloader,
     val_dataloader,
+    adata_train=None,  # Training AnnData for signature matrix initialization
     input_dim=2000,
     latent_dim=32,
     n_cell_types=8,
     n_hidden=128,
     # Loss weights
-    lambda_proto=1.0,
-    lambda_bulk_recon=0.5,
-    lambda_bulk=1.0,
-    lambda_kl=0.1,
+    lambda_proto=0.1,  # Updated default
+    lambda_bulk_recon=10.0,  # Updated default
+    lambda_bulk=5.0,  # Updated default
+    lambda_kl=0.01,  # Updated default
     # Training parameters
     learning_rate=1e-3,
     max_epochs=100,
@@ -83,7 +84,18 @@ def train_hp_vade(
         lambda_kl=lambda_kl,
         learning_rate=learning_rate
     )
-    
+
+    # Initialize signature matrix from cell type means (CRITICAL FOR DECONVOLUTION!)
+    if adata_train is not None:
+        print("\n" + "=" * 80)
+        print("INITIALIZING SIGNATURE MATRIX FROM CELL TYPE MEANS")
+        print("=" * 80)
+        model.init_signature_from_celltype_means(adata_train)
+        print("=" * 80 + "\n")
+    else:
+        print("\n⚠️  WARNING: adata_train not provided - signature matrix will be random!")
+        print("⚠️  This may lead to poor deconvolution performance!\n")
+
     # -------------------------------------------------------------------------
     # 2. Setup callbacks
     # -------------------------------------------------------------------------
