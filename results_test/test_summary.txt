@@ -1,0 +1,50 @@
+================================================================================
+HP-VADE TEST RESULTS SUMMARY
+================================================================================
+
+DECONVOLUTION PERFORMANCE
+--------------------------------------------------------------------------------
+Overall MAE:              0.028801
+Overall RMSE:             0.038343
+Mean Sample Correlation:  -0.000843
+Median Sample Correlation: -0.028383
+Min Sample Correlation:   -0.524447
+Max Sample Correlation:   0.768742
+
+PER-CELL-TYPE PERFORMANCE
+--------------------------------------------------------------------------------
+B cell                          MAE: 0.028690  Corr: -0.007612
+CD14-low, CD16-positive monocyte  MAE: 0.028518  Corr: -0.003906
+CD14-positive monocyte          MAE: 0.028654  Corr: 0.012318
+CD141-positive myeloid dendritic cell  MAE: 0.030224  Corr: -0.053105
+CD16-negative, CD56-bright natural killer cell, human  MAE: 0.028489  Corr: 0.000351
+CD1c-positive myeloid dendritic cell  MAE: 0.028833  Corr: -0.008887
+CD4-positive, alpha-beta T cell  MAE: 0.029361  Corr: 0.090212
+central memory CD4-positive, alpha-beta T cell  MAE: 0.028466  Corr: -0.006834
+central memory CD8-positive, alpha-beta T cell  MAE: 0.029183  Corr: 0.009993
+double negative thymocyte       MAE: 0.029257  Corr: -0.011326
+effector memory CD4-positive, alpha-beta T cell  MAE: 0.028428  Corr: -0.006799
+effector memory CD8-positive, alpha-beta T cell  MAE: 0.028382  Corr: -0.012440
+gamma-delta T cell              MAE: 0.028553  Corr: -0.010537
+hematopoietic precursor cell    MAE: 0.028692  Corr: 0.013985
+innate lymphoid cell            MAE: 0.028242  Corr: -0.008526
+memory B cell                   MAE: 0.030324  Corr: 0.014669
+mucosal invariant T cell        MAE: 0.028485  Corr: -0.023292
+naive B cell                    MAE: 0.028819  Corr: 0.003368
+naive thymus-derived CD4-positive, alpha-beta T cell  MAE: 0.028575  Corr: -0.002498
+naive thymus-derived CD8-positive, alpha-beta T cell  MAE: 0.029018  Corr: -0.001827
+natural killer cell             MAE: 0.028006  Corr: -0.011683
+plasmablast                     MAE: 0.028777  Corr: 0.011972
+plasmacytoid dendritic cell     MAE: 0.029012  Corr: 0.014469
+platelet                        MAE: 0.028891  Corr: -0.005607
+regulatory T cell               MAE: 0.028147  Corr: 0.003301
+
+================================================================================
+RECONSTRUCTION PERFORMANCE
+--------------------------------------------------------------------------------
+Reconstruction MSE:       0.197811
+Reconstruction MAE:       0.207318
+Mean Cell Correlation:    0.517720
+Median Cell Correlation:  0.516592
+
+================================================================================
