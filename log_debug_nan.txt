@@ -1,0 +1,172 @@
+================================================================================
+HP-VADE NaN DIAGNOSTIC
+================================================================================
+
+[1] CHECKING BULK DATA FILES
+--------------------------------------------------------------------------------
+Bulk train shape: (10000, 5000)
+Bulk train range: [0.00, 69289.92]
+Bulk train mean: 200.00
+Bulk train has NaN: False
+Bulk train has Inf: False
+
+Proportions shape: (10000, 25)
+Proportions range: [0.0000, 0.4399]
+Proportions row sums (first 5): [1. 1. 1. 1. 1.]
+Proportions has NaN: False
+
+[2] CHECKING SINGLE-CELL DATA
+--------------------------------------------------------------------------------
+Single-cell .X shape: (548019, 5000)
+Single-cell .X range: [0.0000, 7.8463]
+Single-cell .X mean: 0.1419
+Single-cell .X has NaN: False
+Single-cell .X has Inf: False
+
+Counts layer shape: (548019, 5000)
+Counts layer range: [0.00, 2161.00]
+Counts layer mean: 0.21
+First cell sum: 298.00
+
+Number of cell types: 25
+Cell type distribution:
+  Cell type 0: 26,187 cells
+  Cell type 1: 13,872 cells
+  Cell type 2: 101,205 cells
+  Cell type 3: 189 cells
+  Cell type 4: 1,658 cells
+  Cell type 5: 2,804 cells
+  Cell type 6: 223 cells
+  Cell type 7: 174,601 cells
+  Cell type 8: 13,700 cells
+  Cell type 9: 4,835 cells
+  Cell type 10: 2,506 cells
+  Cell type 11: 20,370 cells
+  Cell type 12: 538 cells
+  Cell type 13: 506 cells
+  Cell type 14: 505 cells
+  Cell type 15: 151 cells
+  Cell type 16: 26,246 cells
+  Cell type 17: 73,844 cells
+  Cell type 18: 1,281 cells
+  Cell type 19: 31,639 cells
+  Cell type 20: 36,786 cells
+  Cell type 21: 366 cells
+  Cell type 22: 998 cells
+  Cell type 23: 387 cells
+  Cell type 24: 12,622 cells
+
+[3] SIMULATING SIGNATURE MATRIX INITIALIZATION
+--------------------------------------------------------------------------------
+Building signature matrix: (5000, 25)
+
+Cell type 0:
+  Number of cells: 26,187
+  Data range: [0.0000, 6.7748]
+  Data mean: 0.1597
+  After expm1 range: [0.00, 874.52]
+  After expm1 mean: 0.61
+  Aggregated sum: 79533208.00
+  Aggregated mean: 15906.64
+  Signature range: [0.00, 26918.69]
+  Signature mean: 200.00
+  Signature sum: 1000000.00
+  Has NaN: False
+  Has Inf: False
+
+Cell type 1:
+  Number of cells: 13,872
+  Data range: [0.0000, 6.4050]
+  Data mean: 0.1941
+  After expm1 range: [0.00, 603.88]
+  After expm1 mean: 0.67
+  Aggregated sum: 46402100.00
+  Aggregated mean: 9280.42
+  Signature range: [0.00, 19308.76]
+  Signature mean: 200.00
+  Signature sum: 1000000.06
+  Has NaN: False
+  Has Inf: False
+
+Cell type 2:
+  Number of cells: 101,205
+  Data range: [0.0000, 6.9984]
+  Data mean: 0.2015
+  After expm1 range: [0.00, 1093.85]
+  After expm1 mean: 0.75
+  Aggregated sum: 382005984.00
+  Aggregated mean: 76401.20
+  Signature range: [0.00, 22155.85]
+  Signature mean: 200.00
+  Signature sum: 1000000.12
+  Has NaN: False
+  Has Inf: False
+
+Full signature matrix:
+  Range: [0.00, 26918.69]
+  Mean: 24.00
+  Has NaN: False
+  Has Inf: False
+  Mean variance across cell types: 80.12
+
+[4] SIMULATING FORWARD PASS
+--------------------------------------------------------------------------------
+Batch size: 16
+
+Bulk batch:
+  Range: [0.00, 40520.86]
+  Mean: 200.00
+
+Signature matrix S:
+  Range: [0.00, 26918.69]
+  Mean: 24.00
+
+Predicted proportions:
+  Range: [0.0001, 0.2113]
+  Mean: 0.0400
+  Sum (should be 1.0): 1.0000
+
+Reconstructed bulk (p_pred @ S.T):
+  Range: [0.00, 4816.65]
+  Mean: 21.99
+  Has NaN: False
+  Has Inf: False
+
+Scale ratio (bulk / reconstructed): 9.10
+
+[5] COMPUTING LOSSES
+--------------------------------------------------------------------------------
+loss_prop_mse: 0.0000
+  Has NaN: False
+loss_prop_kl: 0.0000
+  Has NaN: False
+p_pred.log() range: [-9.1051, -1.5547]
+p_pred.log() has NaN: False
+p_pred.log() has -Inf: False
+
+loss_prop (combined): 0.0000
+  Has NaN: False
+
+loss_bulk_recon: 443003.5000
+  Has NaN: False
+
+Reconstruction error stats:
+  Mean absolute error: 178.02
+  Max absolute error: 38797.08
+  MSE value: 443003.50
+
+================================================================================
+DIAGNOSTIC COMPLETE
+================================================================================
+
+✅ NO NaN DETECTED in forward pass!
+The issue might be in the VAE path or during backpropagation.
+
+================================================================================
+RECOMMENDATIONS:
+================================================================================
+1. Check the output above for NaN/Inf in any intermediate values
+2. If scale ratio is >10 or <0.1, we have a scale mismatch problem
+3. If p_pred.log() has -Inf, we need to add epsilon to proportions
+4. If bulk_recon loss is huge (>1e6), scale mismatch is the issue
+================================================================================
