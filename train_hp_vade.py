@@ -55,11 +55,11 @@ class TrainingConfig:
     N_CELL_TYPES = 8  # PBMC cell types
     N_HIDDEN = 128
 
-    # Loss weights
-    LAMBDA_PROTO = 1.0
-    LAMBDA_BULK_RECON = 0.5
-    LAMBDA_BULK = 1.0
-    LAMBDA_KL = 0.1
+    # Loss weights (optimized for deconvolution performance)
+    LAMBDA_PROTO = 0.1        # Reduced - VAE reconstruction less important
+    LAMBDA_BULK_RECON = 10.0  # INCREASED - bulk reconstruction is KEY!
+    LAMBDA_BULK = 5.0         # INCREASED - deconvolution is the main task
+    LAMBDA_KL = 0.01          # Reduced - just for regularization
 
     # Training parameters
     LEARNING_RATE = 1e-3

@@ -458,14 +458,20 @@ class HP_VADE(pl.LightningModule):
 
         # L_prop: Proportion prediction loss
         # IMPROVED: Use both MSE and KL divergence for stronger supervision
+
+        # Clamp both predicted and true proportions to avoid log(0) = -Inf
         p_true_safe = p_true.clamp(min=1e-10)  # Avoid zeros
         p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)  # Renormalize to sum to 1
 
+        p_pred_safe = p_pred.clamp(min=1e-10)  # CRITICAL: Avoid zeros in p_pred too!
+        p_pred_safe = p_pred_safe / p_pred_safe.sum(dim=1, keepdim=True)  # Renormalize to sum to 1
+
         # MSE loss: Direct supervision on proportions
-        loss_prop_mse = F.mse_loss(p_pred, p_true_safe)
+        loss_prop_mse = F.mse_loss(p_pred_safe, p_true_safe)
 
         # KL divergence: Distribution matching
-        loss_prop_kl = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+        # Use log_softmax for numerical stability instead of p_pred.log()
+        loss_prop_kl = F.kl_div(p_pred_safe.log(), p_true_safe, reduction='batchmean')
 
         # Combined proportion loss (MSE is more important for initial learning)
         loss_prop = loss_prop_mse + 0.1 * loss_prop_kl
@@ -475,6 +481,7 @@ class HP_VADE(pl.LightningModule):
         # b_rec = S @ p_pred^T
         # Math: (input_dim, n_cell_types) @ (batch_size, n_cell_types)^T
         # We want: (batch_size, input_dim), so compute: p_pred @ S^T
+        # Use original p_pred (not clamped) for reconstruction to preserve magnitude
         b_rec = torch.matmul(p_pred, self.S.T)  # (batch_size, input_dim)
         loss_bulk_recon = F.mse_loss(b_rec, b_sim)
 
