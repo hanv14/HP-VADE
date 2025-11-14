@@ -434,10 +434,18 @@ class HP_VADE(pl.LightningModule):
         
         # L_proto: Novel prototype loss
         # Compare reconstruction to its corresponding prototype in S
-        # self.S shape: (input_dim, n_cell_types)
-        # We need to select the right prototype for each cell
-        s_y_prototypes = self.S.T[sc_y]  # (batch_size, input_dim)
-        loss_proto = F.mse_loss(sc_rec, s_y_prototypes)
+        # CRITICAL: sc_rec is in log-normalized space (values 0-10)
+        #           S is in CPM space with target_sum=1e6 (values 0-50000)
+        #           We must transform S to match sc_rec's space!
+
+        # self.S shape: (input_dim, n_cell_types) - in CPM space (1e6 scale)
+        # Single-cell .X is log1p(CPM with target_sum=1e4)
+        # To match: log1p(S * 1e4 / 1e6) = log1p(S / 100)
+
+        s_y_prototypes_cpm = self.S.T[sc_y]  # (batch_size, input_dim) - CPM space
+        s_y_prototypes_log = torch.log1p(s_y_prototypes_cpm / 100.0)  # Convert to log-normalized space
+
+        loss_proto = F.mse_loss(sc_rec, s_y_prototypes_log)
         
         # Total single-cell loss
         loss_sc_total = (loss_recon + 
@@ -578,8 +586,11 @@ class HP_VADE(pl.LightningModule):
         # SC Losses
         loss_recon = F.mse_loss(sc_rec, sc_x)
         loss_kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
-        s_y_prototypes = self.S.T[sc_y]
-        loss_proto = F.mse_loss(sc_rec, s_y_prototypes)
+
+        # Prototype loss: Transform S to log-space to match sc_rec
+        s_y_prototypes_cpm = self.S.T[sc_y]
+        s_y_prototypes_log = torch.log1p(s_y_prototypes_cpm / 100.0)
+        loss_proto = F.mse_loss(sc_rec, s_y_prototypes_log)
         
         loss_sc_total = (loss_recon + 
                         (self.hparams.lambda_kl * loss_kl) + 
@@ -595,9 +606,12 @@ class HP_VADE(pl.LightningModule):
         p_true_safe = p_true.clamp(min=1e-10)
         p_true_safe = p_true_safe / p_true_safe.sum(dim=1, keepdim=True)
 
+        p_pred_safe = p_pred.clamp(min=1e-10)  # Prevent log(0) = -Inf
+        p_pred_safe = p_pred_safe / p_pred_safe.sum(dim=1, keepdim=True)
+
         # MSE + KL divergence for proportions
-        loss_prop_mse = F.mse_loss(p_pred, p_true_safe)
-        loss_prop_kl = F.kl_div(p_pred.log(), p_true_safe, reduction='batchmean')
+        loss_prop_mse = F.mse_loss(p_pred_safe, p_true_safe)
+        loss_prop_kl = F.kl_div(p_pred_safe.log(), p_true_safe, reduction='batchmean')
         loss_prop = loss_prop_mse + 0.1 * loss_prop_kl
 
         b_rec = torch.matmul(p_pred, self.S.T)
