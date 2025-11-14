@@ -280,13 +280,18 @@ class HP_VADE(pl.LightningModule):
 
         This gives S a biologically meaningful starting point instead of random initialization.
 
-        The signature matrix represents the mean expression profile for each cell type in CPM space.
-        This should match the scale of the bulk data.
+        The signature matrix represents the mean expression profile for each cell type in CPM space
+        (target_sum=1e6), which matches the scale of the bulk data.
+
+        Method:
+        1. For each cell type, aggregate raw counts across all cells
+        2. CPM normalize the aggregated profile (divide by total, multiply by 1e6)
+        3. This creates cell-type-specific expression profiles in CPM space
 
         Args:
             adata_train: AnnData object with training data
-                        Should have .X as log1p(CPM) normalized data
-                        Must have .obs['cell_type_int'] for cell type labels
+                        MUST have .layers['counts'] with raw counts (before any normalization)
+                        MUST have .obs['cell_type_int'] for integer cell type labels
         """
         import numpy as np
 
@@ -297,33 +302,34 @@ class HP_VADE(pl.LightningModule):
         n_cell_types = self.S.shape[1]
         n_genes = self.S.shape[0]
 
-        # Get normalized data (.X is log1p(CPM with target_sum=1e4))
-        X_data = adata_train.X
-        if hasattr(X_data, 'toarray'):
-            X_data = X_data.toarray()
+        # Get raw counts from layers['counts'] - these are actual raw counts before normalization
+        if 'counts' not in adata_train.layers:
+            raise ValueError("adata_train must have 'counts' layer with raw counts!")
+
+        raw_counts = adata_train.layers['counts']
+        if hasattr(raw_counts, 'toarray'):
+            raw_counts = raw_counts.toarray()
 
         # Compute signature matrix
         signature_matrix = np.zeros((n_genes, n_cell_types), dtype=np.float32)
 
         print(f"\n[HP-VADE] Data inspection:")
-        print(f"  X data range: [{X_data.min():.4f}, {X_data.max():.4f}]")
-        print(f"  X data mean: {X_data.mean():.4f}")
+        print(f"  Raw counts range: [{raw_counts.min():.2f}, {raw_counts.max():.2f}]")
+        print(f"  Raw counts mean: {raw_counts.mean():.2f}")
+        print(f"  Mean total counts per cell: {raw_counts.sum(axis=1).mean():.2f}")
 
         for ct in range(n_cell_types):
             # Get cells of this type
             ct_mask = cell_type_labels == ct
-            ct_data = X_data[ct_mask]
+            ct_counts = raw_counts[ct_mask]
             n_cells_ct = ct_mask.sum()
 
             if n_cells_ct > 0:
-                # APPROACH 1: Aggregate first, then convert to CPM
-                # Inverse log transform: expm1(log1p(x)) = x
-                ct_counts = np.expm1(ct_data)  # Back to CPM with target_sum=1e4
-
-                # Sum across all cells of this type
+                # CORRECT APPROACH: Aggregate raw counts first, then CPM normalize
+                # Step 1: Sum all raw counts from cells of this type
                 aggregated_counts = ct_counts.sum(axis=0)  # (n_genes,)
 
-                # CPM normalize the aggregated profile
+                # Step 2: CPM normalize the aggregated profile to match bulk data scale
                 total = aggregated_counts.sum()
                 if total > 0:
                     ct_signature = (aggregated_counts / total) * 1e6
@@ -333,9 +339,10 @@ class HP_VADE(pl.LightningModule):
                 signature_matrix[:, ct] = ct_signature
 
                 print(f"  Cell type {ct}: {n_cells_ct:,} cells")
+                print(f"    Aggregated counts sum: {total:.2f}")
                 print(f"    Signature range: [{ct_signature.min():.2f}, {ct_signature.max():.2f}]")
                 print(f"    Signature mean: {ct_signature.mean():.2f}")
-                print(f"    Signature sum: {ct_signature.sum():.2f}")
+                print(f"    Signature sum: {ct_signature.sum():.2f} (should be ~1e6)")
 
         # Set S to these values
         with torch.no_grad():
@@ -349,19 +356,23 @@ class HP_VADE(pl.LightningModule):
 
         # Check for issues
         if torch.isnan(self.S).any():
-            print(f"[HP-VADE] ⚠️  WARNING: NaN values detected in signature matrix!")
+            print(f"[HP-VADE] ⚠️  ERROR: NaN values detected in signature matrix!")
+            raise ValueError("Signature matrix contains NaN values!")
         if torch.isinf(self.S).any():
-            print(f"[HP-VADE] ⚠️  WARNING: Inf values detected in signature matrix!")
+            print(f"[HP-VADE] ⚠️  ERROR: Inf values detected in signature matrix!")
+            raise ValueError("Signature matrix contains Inf values!")
         if (self.S < 0).any():
-            print(f"[HP-VADE] ⚠️  WARNING: Negative values detected in signature matrix!")
+            print(f"[HP-VADE] ⚠️  ERROR: Negative values detected in signature matrix!")
+            raise ValueError("Signature matrix contains negative values!")
 
         # Check variance across cell types
-        s_std_per_gene = self.S.std(dim=1)
-        print(f"[HP-VADE]   Mean std across cell types per gene: {s_std_per_gene.mean().item():.2f}")
-        if s_std_per_gene.mean().item() < 10:
-            print(f"[HP-VADE] ⚠️  WARNING: Very low variance across cell types!")
-            print(f"[HP-VADE] ⚠️  This suggests cell types have similar expression profiles!")
-            print(f"[HP-VADE] ⚠️  Check your data preprocessing - might be over-normalized!")
+        if n_cell_types > 1:
+            s_std_per_gene = self.S.std(dim=1)
+            print(f"[HP-VADE]   Mean std across cell types per gene: {s_std_per_gene.mean().item():.2f}")
+            if s_std_per_gene.mean().item() < 10:
+                print(f"[HP-VADE] ⚠️  WARNING: Very low variance across cell types!")
+                print(f"[HP-VADE] ⚠️  This suggests cell types have similar expression profiles!")
+                print(f"[HP-VADE] ⚠️  Deconvolution may be difficult with such similar profiles!")
 
     def forward(self, bulk_data: torch.Tensor) -> torch.Tensor:
         """

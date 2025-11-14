@@ -6,17 +6,21 @@ User reported two critical issues:
 1. **Loss is NaN during training**
 2. **Signature matrix S initialized to "200 everywhere"**
 
+This issue persisted through multiple attempted fixes.
+
 ## Root Cause Analysis
 
 ### Issue 1: S = 200 Everywhere
 
-The original initialization code had a fundamental flaw:
+The original initialization code had TWO fundamental flaws:
+
+**Flaw #1: Using normalized data instead of raw counts**
 
 ```python
-# OLD CODE (WRONG):
+# FIRST ATTEMPT (WRONG):
 for ct in range(n_cell_types):
     ct_mask = cell_type_labels == ct
-    ct_counts = raw_counts[ct_mask]  # Using 'counts' layer
+    ct_counts = raw_counts[ct_mask]  # Actually using 'counts' layer
 
     # CPM normalize each cell individually
     ct_cpm = np.zeros_like(ct_counts, dtype=np.float32)
@@ -29,13 +33,30 @@ for ct in range(n_cell_types):
     signature_matrix[:, ct] = ct_cpm.mean(axis=0)
 ```
 
-**Problems:**
-1. The `adata.layers['counts']` contains normalized counts (target_sum=1e4), NOT raw counts
+**Problems with first attempt:**
+1. The `adata.layers['counts']` was assumed to contain raw counts, but actually contained normalized counts (target_sum=1e4)
 2. When each cell is already normalized to sum to 10,000:
    - CPM normalization scales to 1,000,000
    - With 5,000 genes, average expression = 1,000,000 / 5,000 = **200**
 3. Averaging CPM-normalized cells washes out cell-type-specific patterns
 4. Result: All genes, all cell types → mean value of ~200
+
+**Flaw #2: Using .X instead of layers['counts']**
+
+```python
+# SECOND ATTEMPT (ALSO WRONG):
+X_data = adata_train.X  # This is log1p(normalized with target_sum=1e4)
+ct_counts = np.expm1(X_data[ct_mask])  # Back to target_sum=1e4 scale
+aggregated_counts = ct_counts.sum(axis=0)
+ct_signature = (aggregated_counts / total) * 1e6  # Scale to CPM
+```
+
+**Problems with second attempt:**
+1. `.X` contains log1p(normalized) data with target_sum=1e4
+2. After expm1, we get data back at target_sum=1e4 scale
+3. But the comment in Phase01A says .X is "normalized (target_sum=1e4)" and "raw counts in layers['counts']"
+4. This means layers['counts'] SHOULD contain true raw counts, not normalized ones
+5. However, the first fix assumed layers['counts'] was also normalized!
 
 ### Issue 2: NaN Loss
 
@@ -51,26 +72,34 @@ With S ≈ 200 everywhere:
 
 ## Solution
 
-### Fixed Initialization Approach
+### Final Correct Approach
 
-**Key insight:** Aggregate counts at cell-type level FIRST, then normalize.
+**Key insight:** Use ACTUAL raw counts from layers['counts'], aggregate first, then CPM normalize.
+
+According to Phase01A documentation:
+- `.X` = log1p(normalize(counts, target_sum=1e4))
+- `.layers['counts']` = **raw counts before any normalization**
+
+We must use layers['counts'] to get true raw counts!
 
 ```python
-# NEW CODE (CORRECT):
+# FINAL CORRECT CODE:
+# Get raw counts from layers['counts']
+raw_counts = adata_train.layers['counts']
+if hasattr(raw_counts, 'toarray'):
+    raw_counts = raw_counts.toarray()
+
 for ct in range(n_cell_types):
     ct_mask = cell_type_labels == ct
-    ct_data = X_data[ct_mask]  # Use .X (log1p normalized)
+    ct_counts = raw_counts[ct_mask]  # TRUE raw counts
 
-    # Inverse log transform: expm1(log1p(x)) = x
-    ct_counts = np.expm1(ct_data)  # Back to CPM with target_sum=1e4
-
-    # AGGREGATE FIRST: Sum across all cells of this type
+    # Step 1: AGGREGATE raw counts across all cells of this type
     aggregated_counts = ct_counts.sum(axis=0)  # (n_genes,)
 
-    # THEN NORMALIZE: CPM normalize the aggregated profile
+    # Step 2: CPM normalize the aggregated profile
     total = aggregated_counts.sum()
     if total > 0:
-        ct_signature = (aggregated_counts / total) * 1e6
+        ct_signature = (aggregated_counts / total) * 1e6  # Scale to CPM
     else:
         ct_signature = np.zeros(n_genes, dtype=np.float32)
 
@@ -78,11 +107,11 @@ for ct in range(n_cell_types):
 ```
 
 **Why this works:**
-1. Uses `.X` data (log1p normalized, more reliable than 'counts' layer)
-2. Aggregates at cell-type level before normalization
-3. Preserves cell-type-specific expression patterns
+1. Uses layers['counts'] which contains TRUE raw counts (not pre-normalized)
+2. Aggregates raw counts at cell-type level before normalization
+3. CPM normalization happens ONCE on the aggregated profile
 4. Results in CPM-scale signatures (thousands) matching bulk data scale
-5. Different cell types have different expression profiles
+5. Different cell types have different expression profiles based on true biological differences
 
 ### Additional Safety Measures
 
