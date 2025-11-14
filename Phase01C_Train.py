@@ -139,7 +139,8 @@ def train_hp_vade(
         'max_epochs': max_epochs,
         'callbacks': callbacks,
         'logger': logger,
-        'gradient_clip_val': 1.0,
+        'gradient_clip_val': 5.0,  # Increased to allow larger gradients initially
+        'gradient_clip_algorithm': 'norm',  # Clip by gradient norm
         'log_every_n_steps': 10,
         'check_val_every_n_epoch': 1,
         'enable_progress_bar': True,

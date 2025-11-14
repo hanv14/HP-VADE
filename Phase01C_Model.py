@@ -280,9 +280,12 @@ class HP_VADE(pl.LightningModule):
 
         This gives S a biologically meaningful starting point instead of random initialization.
 
+        The signature matrix represents the mean expression profile for each cell type in CPM space.
+        This should match the scale of the bulk data.
+
         Args:
             adata_train: AnnData object with training data
-                        Must have .layers['counts'] for raw counts
+                        Should have .X as log1p(CPM) normalized data
                         Must have .obs['cell_type_int'] for cell type labels
         """
         import numpy as np
@@ -292,40 +295,73 @@ class HP_VADE(pl.LightningModule):
         # Get cell type labels
         cell_type_labels = adata_train.obs['cell_type_int'].values
         n_cell_types = self.S.shape[1]
+        n_genes = self.S.shape[0]
 
-        # Get raw counts (for CPM calculation)
-        raw_counts = adata_train.layers['counts']
-        if hasattr(raw_counts, 'toarray'):
-            raw_counts = raw_counts.toarray()
+        # Get normalized data (.X is log1p(CPM with target_sum=1e4))
+        X_data = adata_train.X
+        if hasattr(X_data, 'toarray'):
+            X_data = X_data.toarray()
 
-        # Compute CPM-normalized mean expression for each cell type
-        signature_matrix = np.zeros((self.S.shape[0], n_cell_types), dtype=np.float32)
+        # Compute signature matrix
+        signature_matrix = np.zeros((n_genes, n_cell_types), dtype=np.float32)
+
+        print(f"\n[HP-VADE] Data inspection:")
+        print(f"  X data range: [{X_data.min():.4f}, {X_data.max():.4f}]")
+        print(f"  X data mean: {X_data.mean():.4f}")
 
         for ct in range(n_cell_types):
             # Get cells of this type
             ct_mask = cell_type_labels == ct
-            ct_counts = raw_counts[ct_mask]
+            ct_data = X_data[ct_mask]
+            n_cells_ct = ct_mask.sum()
 
-            if ct_counts.shape[0] > 0:
-                # CPM normalization for each cell, then average
-                ct_cpm = np.zeros_like(ct_counts, dtype=np.float32)
-                for i in range(ct_counts.shape[0]):
-                    total = ct_counts[i].sum()
-                    if total > 0:
-                        ct_cpm[i] = (ct_counts[i] / total) * 1e6
+            if n_cells_ct > 0:
+                # APPROACH 1: Aggregate first, then convert to CPM
+                # Inverse log transform: expm1(log1p(x)) = x
+                ct_counts = np.expm1(ct_data)  # Back to CPM with target_sum=1e4
 
-                # Mean CPM expression for this cell type
-                signature_matrix[:, ct] = ct_cpm.mean(axis=0)
+                # Sum across all cells of this type
+                aggregated_counts = ct_counts.sum(axis=0)  # (n_genes,)
 
-                print(f"  Cell type {ct}: {ct_mask.sum()} cells, mean CPM = {signature_matrix[:, ct].mean():.2f}")
+                # CPM normalize the aggregated profile
+                total = aggregated_counts.sum()
+                if total > 0:
+                    ct_signature = (aggregated_counts / total) * 1e6
+                else:
+                    ct_signature = np.zeros(n_genes, dtype=np.float32)
+
+                signature_matrix[:, ct] = ct_signature
+
+                print(f"  Cell type {ct}: {n_cells_ct:,} cells")
+                print(f"    Signature range: [{ct_signature.min():.2f}, {ct_signature.max():.2f}]")
+                print(f"    Signature mean: {ct_signature.mean():.2f}")
+                print(f"    Signature sum: {ct_signature.sum():.2f}")
 
         # Set S to these values
         with torch.no_grad():
             self.S.copy_(torch.FloatTensor(signature_matrix))
 
-        print(f"[HP-VADE] ✓ Signature matrix initialized from cell type means")
+        print(f"\n[HP-VADE] ✓ Signature matrix initialized from cell type means")
+        print(f"[HP-VADE]   S shape: {self.S.shape}")
         print(f"[HP-VADE]   S range: [{self.S.min().item():.2f}, {self.S.max().item():.2f}]")
         print(f"[HP-VADE]   S mean: {self.S.mean().item():.2f}")
+        print(f"[HP-VADE]   S per-column means: {[self.S[:, i].mean().item() for i in range(min(5, n_cell_types))]}")
+
+        # Check for issues
+        if torch.isnan(self.S).any():
+            print(f"[HP-VADE] ⚠️  WARNING: NaN values detected in signature matrix!")
+        if torch.isinf(self.S).any():
+            print(f"[HP-VADE] ⚠️  WARNING: Inf values detected in signature matrix!")
+        if (self.S < 0).any():
+            print(f"[HP-VADE] ⚠️  WARNING: Negative values detected in signature matrix!")
+
+        # Check variance across cell types
+        s_std_per_gene = self.S.std(dim=1)
+        print(f"[HP-VADE]   Mean std across cell types per gene: {s_std_per_gene.mean().item():.2f}")
+        if s_std_per_gene.mean().item() < 10:
+            print(f"[HP-VADE] ⚠️  WARNING: Very low variance across cell types!")
+            print(f"[HP-VADE] ⚠️  This suggests cell types have similar expression profiles!")
+            print(f"[HP-VADE] ⚠️  Check your data preprocessing - might be over-normalized!")
 
     def forward(self, bulk_data: torch.Tensor) -> torch.Tensor:
         """
@@ -439,6 +475,37 @@ class HP_VADE(pl.LightningModule):
         # ===================================================================
 
         total_loss = loss_sc_total + (self.hparams.lambda_bulk * loss_bulk_total)
+
+        # --- Scale Validation (first batch only) ---
+        if batch_idx == 0 and self.current_epoch == 0:
+            print("\n" + "=" * 70)
+            print("FIRST BATCH VALIDATION - CHECKING SCALES")
+            print("=" * 70)
+            print(f"Bulk data (b_sim):")
+            print(f"  Range: [{b_sim.min().item():.2f}, {b_sim.max().item():.2f}]")
+            print(f"  Mean: {b_sim.mean().item():.2f}")
+            print(f"  Std: {b_sim.std().item():.2f}")
+            print(f"\nSignature matrix (S):")
+            print(f"  Range: [{self.S.min().item():.2f}, {self.S.max().item():.2f}]")
+            print(f"  Mean: {self.S.mean().item():.2f}")
+            print(f"  Std: {self.S.std().item():.2f}")
+            print(f"\nReconstructed bulk (b_rec = p_pred @ S.T):")
+            print(f"  Range: [{b_rec.min().item():.2f}, {b_rec.max().item():.2f}]")
+            print(f"  Mean: {b_rec.mean().item():.2f}")
+            print(f"  Std: {b_rec.std().item():.2f}")
+            print(f"\nPredicted proportions (p_pred):")
+            print(f"  Range: [{p_pred.min().item():.4f}, {p_pred.max().item():.4f}]")
+            print(f"  Mean: {p_pred.mean().item():.4f}")
+            print(f"  Sum (should be ~1.0): {p_pred.sum(dim=1).mean().item():.4f}")
+
+            # Check for scale mismatch
+            scale_ratio = b_sim.mean().item() / (b_rec.mean().item() + 1e-10)
+            print(f"\nScale ratio (bulk_data / bulk_reconstructed): {scale_ratio:.2f}")
+            if scale_ratio > 10 or scale_ratio < 0.1:
+                print(f"⚠️  WARNING: SEVERE SCALE MISMATCH!")
+                print(f"⚠️  Bulk data and signature matrix are on very different scales!")
+                print(f"⚠️  This will cause training instability and NaN losses!")
+            print("=" * 70 + "\n")
 
         # --- NaN Detection (for debugging) ---
         if torch.isnan(total_loss):
