@@ -377,17 +377,20 @@ class HP_VADE(pl.LightningModule):
     def forward(self, bulk_data: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for inference (deconvolution only).
-        
+
         This is used when the model is in eval mode and we only want
         to predict cell type proportions from bulk data.
-        
+
         Args:
-            bulk_data: Bulk expression data (batch_size, input_dim)
-            
+            bulk_data: Bulk expression data in CPM space (batch_size, input_dim)
+
         Returns:
             p_pred: Predicted cell type proportions (batch_size, n_cell_types)
         """
-        return self.deconv_net(bulk_data)
+        # Log-normalize bulk data before passing to deconvolution network
+        # Same transformation as in training/validation
+        bulk_data_log = torch.log1p(bulk_data / 100.0)
+        return self.deconv_net(bulk_data_log)
     
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """
@@ -455,13 +458,18 @@ class HP_VADE(pl.LightningModule):
         # ===================================================================
         # 2. THE BULK PATH (DECONVOLUTION)
         # ===================================================================
-        
-        b_sim = batch['bulk_data']     # (batch_size, input_dim)
+
+        b_sim = batch['bulk_data']     # (batch_size, input_dim) - CPM space (0-50,000)
         p_true = batch['bulk_prop']    # (batch_size, n_cell_types)
-        
-        # Deconvolution forward pass
-        p_pred = self.deconv_net(b_sim)  # Predict proportions
-        
+
+        # CRITICAL FIX: Log-normalize bulk data for deconvolution network input
+        # The deconvolution network needs normalized inputs like the VAE encoder
+        # bulk_data is CPM with target_sum=1e6, we convert to same scale as single-cell (target_sum=1e4)
+        b_sim_log = torch.log1p(b_sim / 100.0)  # (batch_size, input_dim) - log-normalized (0-10)
+
+        # Deconvolution forward pass with log-normalized input
+        p_pred = self.deconv_net(b_sim_log)  # Predict proportions from log-normalized bulk
+
         # --- Calculate Bulk Losses ---
 
         # L_prop: Proportion prediction loss
@@ -489,9 +497,15 @@ class HP_VADE(pl.LightningModule):
         # b_rec = S @ p_pred^T
         # Math: (input_dim, n_cell_types) @ (batch_size, n_cell_types)^T
         # We want: (batch_size, input_dim), so compute: p_pred @ S^T
-        # Use original p_pred (not clamped) for reconstruction to preserve magnitude
-        b_rec = torch.matmul(p_pred, self.S.T)  # (batch_size, input_dim)
-        loss_bulk_recon = F.mse_loss(b_rec, b_sim)
+        # S is in CPM space, so b_rec will also be in CPM space
+        b_rec = torch.matmul(p_pred, self.S.T)  # (batch_size, input_dim) - CPM space
+
+        # CRITICAL: Compare in log-space for balanced loss magnitudes
+        # CPM-space MSE can be 1,000,000+ which dominates other losses
+        # Log-space MSE is ~1-10, matching other loss components
+        b_rec_log = torch.log1p(b_rec / 100.0)  # Convert reconstruction to log-space
+        b_sim_log_target = torch.log1p(b_sim / 100.0)  # Convert target to log-space
+        loss_bulk_recon = F.mse_loss(b_rec_log, b_sim_log_target)
 
         # Total bulk loss (bulk reconstruction is critical!)
         loss_bulk_total = loss_prop + (self.hparams.lambda_bulk_recon * loss_bulk_recon)
@@ -505,32 +519,60 @@ class HP_VADE(pl.LightningModule):
         # --- Scale Validation (first batch only) ---
         if batch_idx == 0 and self.current_epoch == 0:
             print("\n" + "=" * 70)
-            print("FIRST BATCH VALIDATION - CHECKING SCALES")
+            print("FIRST BATCH VALIDATION - CHECKING SCALES AND LOSSES")
             print("=" * 70)
-            print(f"Bulk data (b_sim):")
+            print(f"Bulk data - CPM space (b_sim):")
             print(f"  Range: [{b_sim.min().item():.2f}, {b_sim.max().item():.2f}]")
             print(f"  Mean: {b_sim.mean().item():.2f}")
-            print(f"  Std: {b_sim.std().item():.2f}")
-            print(f"\nSignature matrix (S):")
+
+            print(f"\nBulk data - Log-normalized (input to deconv network):")
+            print(f"  Range: [{b_sim_log.min().item():.4f}, {b_sim_log.max().item():.4f}]")
+            print(f"  Mean: {b_sim_log.mean().item():.4f}")
+
+            print(f"\nSignature matrix (S) - CPM space:")
             print(f"  Range: [{self.S.min().item():.2f}, {self.S.max().item():.2f}]")
             print(f"  Mean: {self.S.mean().item():.2f}")
-            print(f"  Std: {self.S.std().item():.2f}")
-            print(f"\nReconstructed bulk (b_rec = p_pred @ S.T):")
+
+            print(f"\nReconstructed bulk (b_rec = p_pred @ S.T) - CPM space:")
             print(f"  Range: [{b_rec.min().item():.2f}, {b_rec.max().item():.2f}]")
             print(f"  Mean: {b_rec.mean().item():.2f}")
-            print(f"  Std: {b_rec.std().item():.2f}")
+
+            print(f"\nReconstructed bulk - Log-normalized (for loss computation):")
+            print(f"  Range: [{b_rec_log.min().item():.4f}, {b_rec_log.max().item():.4f}]")
+            print(f"  Mean: {b_rec_log.mean().item():.4f}")
+
             print(f"\nPredicted proportions (p_pred):")
             print(f"  Range: [{p_pred.min().item():.4f}, {p_pred.max().item():.4f}]")
             print(f"  Mean: {p_pred.mean().item():.4f}")
             print(f"  Sum (should be ~1.0): {p_pred.sum(dim=1).mean().item():.4f}")
 
-            # Check for scale mismatch
+            print(f"\nLoss components:")
+            print(f"  loss_prop_mse: {loss_prop_mse.item():.6f}")
+            print(f"  loss_prop_kl: {loss_prop_kl.item():.6f}")
+            print(f"  loss_bulk_recon (in log-space): {loss_bulk_recon.item():.6f}")
+            print(f"  loss_proto: {loss_proto.item():.6f}")
+            print(f"  loss_recon: {loss_recon.item():.6f}")
+            print(f"  loss_kl: {loss_kl.item():.6f}")
+
+            # Check for scale mismatch in CPM space
             scale_ratio = b_sim.mean().item() / (b_rec.mean().item() + 1e-10)
-            print(f"\nScale ratio (bulk_data / bulk_reconstructed): {scale_ratio:.2f}")
-            if scale_ratio > 10 or scale_ratio < 0.1:
-                print(f"⚠️  WARNING: SEVERE SCALE MISMATCH!")
-                print(f"⚠️  Bulk data and signature matrix are on very different scales!")
-                print(f"⚠️  This will cause training instability and NaN losses!")
+            print(f"\nCPM space check:")
+            print(f"  Scale ratio (bulk_data / bulk_reconstructed): {scale_ratio:.2f}")
+            if scale_ratio > 3 or scale_ratio < 0.3:
+                print(f"  ⚠️  Scale mismatch in CPM space - but this is OK!")
+                print(f"  ⚠️  Loss is computed in log-space, not CPM space.")
+            else:
+                print(f"  ✅ Good scale match in CPM space!")
+
+            # Check log-space match
+            log_scale_ratio = b_sim_log_target.mean().item() / (b_rec_log.mean().item() + 1e-10)
+            print(f"\nLog-space check (what matters for loss):")
+            print(f"  Scale ratio (bulk_log / recon_log): {log_scale_ratio:.2f}")
+            if log_scale_ratio > 1.5 or log_scale_ratio < 0.7:
+                print(f"  ⚠️  WARNING: Scale mismatch in log-space!")
+            else:
+                print(f"  ✅ Good scale match in log-space!")
+
             print("=" * 70 + "\n")
 
         # --- NaN Detection (for debugging) ---
@@ -597,10 +639,12 @@ class HP_VADE(pl.LightningModule):
                         (self.hparams.lambda_proto * loss_proto))
         
         # --- Bulk Path ---
-        b_sim = batch['bulk_data']
+        b_sim = batch['bulk_data']  # CPM space
         p_true = batch['bulk_prop']
-        
-        p_pred = self.deconv_net(b_sim)
+
+        # Log-normalize bulk for deconvolution network (same as training)
+        b_sim_log = torch.log1p(b_sim / 100.0)
+        p_pred = self.deconv_net(b_sim_log)
 
         # Bulk Losses (same as training)
         p_true_safe = p_true.clamp(min=1e-10)
@@ -614,8 +658,11 @@ class HP_VADE(pl.LightningModule):
         loss_prop_kl = F.kl_div(p_pred_safe.log(), p_true_safe, reduction='batchmean')
         loss_prop = loss_prop_mse + 0.1 * loss_prop_kl
 
-        b_rec = torch.matmul(p_pred, self.S.T)
-        loss_bulk_recon = F.mse_loss(b_rec, b_sim)
+        # Reconstruction in CPM space, compare in log-space (same as training)
+        b_rec = torch.matmul(p_pred, self.S.T)  # CPM space
+        b_rec_log = torch.log1p(b_rec / 100.0)
+        b_sim_log_target = torch.log1p(b_sim / 100.0)
+        loss_bulk_recon = F.mse_loss(b_rec_log, b_sim_log_target)
 
         loss_bulk_total = loss_prop + (self.hparams.lambda_bulk_recon * loss_bulk_recon)
         
